@@ -1,3 +1,8 @@
+---
+name: mtb-news
+description: 'Mountain-biking news — what is new in MTB, on a discipline, a race series, a component or a trail network, and what a named site (Pinkbike, Singletracks, Vital MTB, BikeRadar, r/MTB) is saying about it. Activate for any question about current mountain-biking news, race results, product launches or rider opinion, and before running any mtb-* view. Answers come from live feeds, never from recollection.'
+---
+
 # Mountain-biking news
 
 Answer MTB questions from the views, not from hand-written Cypher and not from memory. A bike,
