@@ -1,0 +1,107 @@
+# The realm's answer surface. Every question this realm exists for should be a view here, so
+# nobody hand-writes Cypher over the join surface — and so the one thing that is easy to get
+# wrong is written once: a virtual label can only be reached by traversing from a bound anchor,
+# so every view below pins MtbTopic. `MATCH (n:MtbNewsItem)` on its own is rejected, and a caller
+# who does not know that gets an error instead of an answer.
+#
+# All of them take the topic as a parameter rather than reading stored MtbTopic nodes, because
+# pinning works whether or not the topic has been saved — the same view answers for a standing
+# interest and for something the user just thought of.
+
+- name: mtb-news
+  description: >-
+    Latest mountain-biking stories on a topic, across every source at once — the open web plus
+    Pinkbike, Vital MTB, Singletracks, BikeRadar and r/MTB. Rows: {source, title, url, published,
+    summary}. `source` is which feed carried it. This is the default view for "what's new in MTB"
+    and for any topic-shaped question; use the per-source views only when the user names a site.
+  params:
+    topic:
+      type: string
+      default: "mountain biking"
+      description: "Search phrase, as you would type it into a search box — 'enduro world cup', 'dropper post', 'Rotorua'."
+    limit:
+      type: int
+      default: 30
+      description: "Maximum stories to return, newest first."
+  cypher: |
+    MATCH (t:MtbTopic {topic: $topic})
+          -[r:HAS_MTB_NEWS|HAS_PINKBIKE_NEWS|HAS_VITALMTB_NEWS|HAS_SINGLETRACKS_NEWS|HAS_BIKERADAR_NEWS|HAS_REDDIT_MTB]->
+          (n:MtbNewsItem)
+    RETURN type(r)      AS source,
+           n.title      AS title,
+           n.url        AS url,
+           n.publishedAt AS published,
+           n.summary    AS summary
+    ORDER BY published DESC
+    LIMIT $limit
+
+- name: mtb-news-by-source
+  description: >-
+    How many stories each source is carrying on a topic right now, and the most recent date in
+    each. Rows: {source, stories, latest}. Use it to answer "who is covering this" and to see at
+    a glance when one source has gone quiet — a zero row cannot appear here, so a source missing
+    from the result is a source with nothing, which is itself the answer.
+  params:
+    topic:
+      type: string
+      default: "mountain biking"
+      description: "Search phrase to count coverage for."
+  cypher: |
+    MATCH (t:MtbTopic {topic: $topic})
+          -[r:HAS_MTB_NEWS|HAS_PINKBIKE_NEWS|HAS_VITALMTB_NEWS|HAS_SINGLETRACKS_NEWS|HAS_BIKERADAR_NEWS|HAS_REDDIT_MTB]->
+          (n:MtbNewsItem)
+    RETURN type(r)            AS source,
+           count(DISTINCT n)  AS stories,
+           max(n.publishedAt) AS latest
+    ORDER BY stories DESC
+
+- name: mtb-news-from-site
+  description: >-
+    Stories on a topic from ONE named source. Rows: {title, url, published, summary}. Ask this
+    when the user names a site — "what does Pinkbike say about", "anything on Singletracks about".
+    `site` takes the short name, not a domain.
+  params:
+    topic:
+      type: string
+      default: "mountain biking"
+      description: "Search phrase."
+    site:
+      type: string
+      default: "pinkbike"
+      description: "One of: pinkbike, vitalmtb, singletracks, bikeradar, reddit, web."
+    limit:
+      type: int
+      default: 20
+      description: "Maximum stories, newest first."
+  cypher: |
+    MATCH (t:MtbTopic {topic: $topic})
+          -[r:HAS_MTB_NEWS|HAS_PINKBIKE_NEWS|HAS_VITALMTB_NEWS|HAS_SINGLETRACKS_NEWS|HAS_BIKERADAR_NEWS|HAS_REDDIT_MTB]->
+          (n:MtbNewsItem)
+    WITH n, type(r) AS rel,
+         CASE toLower($site)
+           WHEN 'pinkbike'    THEN 'HAS_PINKBIKE_NEWS'
+           WHEN 'vitalmtb'    THEN 'HAS_VITALMTB_NEWS'
+           WHEN 'singletracks' THEN 'HAS_SINGLETRACKS_NEWS'
+           WHEN 'bikeradar'   THEN 'HAS_BIKERADAR_NEWS'
+           WHEN 'reddit'      THEN 'HAS_REDDIT_MTB'
+           WHEN 'web'         THEN 'HAS_MTB_NEWS'
+           ELSE null
+         END AS wanted
+    WHERE rel = wanted
+    RETURN n.title       AS title,
+           n.url         AS url,
+           n.publishedAt AS published,
+           n.summary     AS summary
+    ORDER BY published DESC
+    LIMIT $limit
+
+- name: mtb-tracked-topics
+  description: >-
+    The topics the user has saved to follow, with how long ago each was added. Rows: {topic,
+    notes}. This reads STORED nodes and fetches nothing — it answers "what am I following",
+    never "what is new". Empty means nothing has been saved yet, which is normal: the news views
+    work on an ad-hoc phrase without anything being tracked first.
+  cypher: |
+    MATCH (t:MtbTopic)
+    RETURN t.topic AS topic, t.notes AS notes
+    ORDER BY topic

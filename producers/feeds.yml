@@ -1,0 +1,74 @@
+# Six keyed search feeds, one per source. `kind: feed` is the right shape here because none of
+# these publish a JSON API worth typing — they publish a search endpoint that answers in RSS,
+# which is exactly what a feed producer joins on: one search per anchor key, one record per item.
+#
+# WHY GOOGLE NEWS FOR THE SITE-SCOPED ONES, rather than each site's own feed. Probed 2026-08-24
+# from this host: pinkbike.com/pages/rss.php answers 403 behind Cloudflare and vitalmtb.com/rss
+# answers a JS challenge, so neither is fetchable server-side; bikeradar.com/feed is 404. All
+# three are indexed by Google News, and a `site:` query against it is a keyed search feed with no
+# key and no bot wall. Singletracks is the exception — its own WordPress search feed answers
+# cleanly, so it is read direct and Google is not in that path.
+#
+# Reddit is here for the same reason: reddit.com/r/MTB/search.rss rate-limits (429) from a
+# datacenter IP without OAuth, and old.reddit serves an interstitial instead of the feed. The
+# site-scoped Google query gets the threads without an API key or a login.
+#
+# CACHE. Half an hour. News that is thirty minutes stale is still news; a feed hammered per query
+# is a way to get blocked. `negativeTtlSeconds` is deliberately shorter — a topic with nothing
+# written about it today may well have something tomorrow, and caching an empty answer for as long
+# as a full one makes a quiet topic look permanently dead.
+#
+# PACE. minIntervalMs 1000 against the engine's 500ms floor. These are somebody's search endpoint,
+# not a bulk API, and the whole point of a per-topic join is that a query touches a handful of keys.
+
+- name: mtbNewsByTopic
+  kind: feed
+  url: 'https://news.google.com/rss/search?q={key}+mountain+biking&hl=en-AU&gl=AU&ceid=AU:en'
+  keyAs: searchPhrase
+  maxItems: 25
+  minIntervalMs: 1000
+  cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
+
+# The site-scoped four. `{key}` lands after the site: qualifier, so the qualifier is never
+# something the key can escape — a topic phrase cannot widen the search off the site.
+- name: pinkbikeByTopic
+  kind: feed
+  url: 'https://news.google.com/rss/search?q=site:pinkbike.com+{key}&hl=en-AU&gl=AU&ceid=AU:en'
+  keyAs: searchPhrase
+  maxItems: 20
+  minIntervalMs: 1000
+  cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
+
+- name: vitalMtbByTopic
+  kind: feed
+  url: 'https://news.google.com/rss/search?q=site:vitalmtb.com+{key}&hl=en-AU&gl=AU&ceid=AU:en'
+  keyAs: searchPhrase
+  maxItems: 20
+  minIntervalMs: 1000
+  cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
+
+- name: bikeRadarByTopic
+  kind: feed
+  url: 'https://news.google.com/rss/search?q=site:bikeradar.com+{key}&hl=en-AU&gl=AU&ceid=AU:en'
+  keyAs: searchPhrase
+  maxItems: 20
+  minIntervalMs: 1000
+  cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
+
+- name: redditMtbByTopic
+  kind: feed
+  url: 'https://news.google.com/rss/search?q=site:reddit.com/r/MTB+{key}&hl=en-AU&gl=AU&ceid=AU:en'
+  keyAs: searchPhrase
+  maxItems: 20
+  minIntervalMs: 1000
+  cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
+
+# Read direct — Singletracks' own WordPress search feed answers without a bot wall, so there is no
+# reason to go through an aggregator and lose the site's own excerpt.
+- name: singletracksByTopic
+  kind: feed
+  url: 'https://www.singletracks.com/?s={key}&feed=rss2'
+  keyAs: searchPhrase
+  maxItems: 20
+  minIntervalMs: 1000
+  cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }

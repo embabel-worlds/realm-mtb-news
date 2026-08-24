@@ -1,0 +1,13 @@
+name: mtb-news
+description: >-
+  Mountain-biking news. A tracked topic ("enduro", "downhill racing", "dropper posts") is the
+  anchor; each source is a keyed RSS search reached by traversal, so nothing is mirrored and
+  nothing goes stale. Sources: the open web, plus site-scoped searches over Pinkbike, Vital MTB,
+  Singletracks, BikeRadar and r/MTB. Needs no API key. Traversal is
+  (t:MtbTopic)-[:HAS_MTB_NEWS|HAS_PINKBIKE_NEWS|...]->(n:MtbNewsItem).
+version: "0.1.0"
+author: "jasper"
+tags:
+  - news
+  - cycling
+  - mountain-biking

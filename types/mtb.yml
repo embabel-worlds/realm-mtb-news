@@ -1,0 +1,85 @@
+# Two types, and the split between them is the whole design.
+#
+# MtbTopic is STORED — it is the user's standing interest, the handful of things they want
+# followed. MtbNewsItem is VIRTUAL — fetched when a query traverses to it and rolled back after.
+# Mirroring news would mean a sync job, a staleness window, and a store that grows forever to
+# answer a question that is only ever about the last few days. Fetching on traversal costs one
+# feed read and can never serve yesterday's front page as today's.
+#
+# A topic that is not stored still works: the anchor can be pinned with a literal, so an ad-hoc
+# `MATCH (t:MtbTopic {topic:'fork service'})` fetches without anyone having saved it first.
+
+- name: MtbTopic
+  description: >-
+    A mountain-biking subject the user follows — a discipline, a race series, a component class,
+    a trail network. The search phrase is the identity, because it is also the key every feed
+    producer is searched by: what you name it here is literally what gets asked of the sources.
+  userAnchor:
+    predicate: TRACKS
+    direction: from-user
+  properties:
+    topic:
+      identity: true
+      description: >-
+        The search phrase, as it will be sent to every source, e.g. 'enduro world cup',
+        'dropper post', 'Rotorua trails'. Phrase it as you would type it into a search box —
+        a bare word like 'brakes' pulls in every sport that has them.
+    notes: "Why this topic is followed — free text, for the user's own benefit."
+
+- name: MtbNewsItem
+  userAnchor: false
+  description: >-
+    One story about a followed topic, as a source's own search feed reported it. Virtual: it
+    exists for the life of the query that asked for it and is never stored, so a title here is
+    always what the source is publishing right now.
+
+    The SOURCE IS THE RELATIONSHIP, not a property — `type(r)` distinguishes a Pinkbike hit from
+    an r/MTB thread. Items dedupe on url, so a story carried by two sources is one node reached
+    by two edges, which is a signal in itself.
+  properties:
+    url:
+      identity: true
+      description: "Canonical link to the story. The dedup key — two sources reporting the same link converge on one node."
+    title: "Headline as the source published it."
+    publishedAt: "When the source says it was published, ISO-8601 where the feed's date parses."
+    summary: "The feed's own excerpt. Often the first sentences, sometimes empty — an empty summary is a thin feed, not a thin story."
+    searchPhrase: "The topic this item was fetched for, echoed back so it links to the anchor that asked."
+  virtualJoins:
+    # One join per source. All anchored on MtbTopic and keyed by the same phrase, so adding a
+    # source is one producer plus one entry here — no change to any view that reads type(r).
+    - anchorLabel: MtbTopic
+      relationship: HAS_MTB_NEWS
+      keyField: topic
+      recordKeyField: searchPhrase
+      producer: mtbNewsByTopic
+      maxAnchors: 10
+    - anchorLabel: MtbTopic
+      relationship: HAS_PINKBIKE_NEWS
+      keyField: topic
+      recordKeyField: searchPhrase
+      producer: pinkbikeByTopic
+      maxAnchors: 10
+    - anchorLabel: MtbTopic
+      relationship: HAS_VITALMTB_NEWS
+      keyField: topic
+      recordKeyField: searchPhrase
+      producer: vitalMtbByTopic
+      maxAnchors: 10
+    - anchorLabel: MtbTopic
+      relationship: HAS_SINGLETRACKS_NEWS
+      keyField: topic
+      recordKeyField: searchPhrase
+      producer: singletracksByTopic
+      maxAnchors: 10
+    - anchorLabel: MtbTopic
+      relationship: HAS_BIKERADAR_NEWS
+      keyField: topic
+      recordKeyField: searchPhrase
+      producer: bikeRadarByTopic
+      maxAnchors: 10
+    - anchorLabel: MtbTopic
+      relationship: HAS_REDDIT_MTB
+      keyField: topic
+      recordKeyField: searchPhrase
+      producer: redditMtbByTopic
+      maxAnchors: 10
