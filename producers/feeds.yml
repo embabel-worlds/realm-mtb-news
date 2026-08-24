@@ -1,66 +1,89 @@
-# Six keyed search feeds, one per source. `kind: feed` is the right shape here because none of
-# these publish a JSON API worth typing — they publish a search endpoint that answers in RSS,
-# which is exactly what a feed producer joins on: one search per anchor key, one record per item.
+# Five search-backed producers plus one native feed. The split is not a preference — it is what
+# the sources allow, re-probed from this host on 2026-08-24:
 #
-# WHY GOOGLE NEWS FOR THE SITE-SCOPED ONES, rather than each site's own feed. Probed 2026-08-24
-# from this host: pinkbike.com/pages/rss.php answers 403 behind Cloudflare and vitalmtb.com/rss
-# answers a JS challenge, so neither is fetchable server-side; bikeradar.com/feed is 404. All
-# three are indexed by Google News, and a `site:` query against it is a keyed search feed with no
-# key and no bot wall. Singletracks is the exception — its own WordPress search feed answers
-# cleanly, so it is read direct and Google is not in that path.
+#   pinkbike.com   RSS 403 (Cloudflare) on every path, with and without a browser UA; the article
+#                  pages are 403 too, so the site is unreadable server-side by any route.
+#   vitalmtb.com   /rss answers 200 with ZERO items — a JS challenge page, not a feed.
+#   bikeradar.com  no feed at all: /feed, /feed/, /rss, /rss.xml, /mtb/feed and sitemap.xml are 404.
+#                  Its article pages DO fetch, so only discovery was ever the problem.
+#   reddit.com     search.rss 403, new.rss and search.json 429 from a datacenter IP without OAuth.
+#   singletracks   its own WordPress search feed answers cleanly, 40 items. Read direct — below.
 #
-# Reddit is here for the same reason: reddit.com/r/MTB/search.rss rate-limits (429) from a
-# datacenter IP without OAuth, and old.reddit serves an interstitial instead of the feed. The
-# site-scoped Google query gets the threads without an API key or a login.
+# WHY NOT GOOGLE NEWS, which these five used until now. It answers, but every link it returns is a
+# news.google.com redirect shell: the target is reached by JS so curl -L stays on Google, the
+# base64 id carries an opaque token rather than the publisher URL, and the <description> is a link
+# blob rather than prose. That cost us three things at once — no real URL to open or dedupe on, no
+# summary worth showing, and no way to ingest an article's text downstream.
 #
-# CACHE. Half an hour. News that is thirty minutes stale is still news; a feed hammered per query
-# is a way to get blocked. `negativeTtlSeconds` is deliberately shorter — a topic with nothing
-# written about it today may well have something tomorrow, and caching an empty answer for as long
-# as a full one makes a quiet topic look permanently dead.
+# WHY BRAVE. `gateway.brave.webSearch` (realm-research, needs BRAVE_API_KEY) returns the
+# publisher's real URL, a real prose description, a parseable `page_age`, and a `thumbnail` — so
+# one swap fixes links, summaries, dates and pictures together. A `site:` qualifier keeps each
+# producer to its own source, and `{key}` lands after it so a topic phrase can never widen the
+# search off the site.
 #
-# PACE. minIntervalMs 1000 against the engine's 500ms floor. These are somebody's search endpoint,
-# not a bulk API, and the whole point of a per-topic join is that a query touches a handful of keys.
+# FRESHNESS. `py` — the past year. Brave ranks by RELEVANCE, not recency, so an unbounded search
+# put a 2012 explainer above this month's World Cup coverage. A year is the compromise: it keeps
+# the 20 slots on plausibly-current material without starving a quiet topic the way `pm` would.
+# The views still sort newest-first, so recency wins the top of the list.
+#
+# CACHE. Half an hour. News that is thirty minutes stale is still news, and a search endpoint
+# hammered per query is a way to burn quota. `negativeTtlSeconds` is deliberately shorter — a
+# topic with nothing written about it today may well have something tomorrow, and caching an empty
+# answer as long as a full one makes a quiet topic look permanently dead.
 
 - name: mtbNewsByTopic
-  kind: feed
-  url: 'https://news.google.com/rss/search?q={key}+mountain+biking&hl=en-AU&gl=AU&ceid=AU:en'
-  keyAs: searchPhrase
-  maxItems: 25
-  minIntervalMs: 1000
+  kind: remote
+  operation: webSearch
+  records: "$.web.results[*]"
+  keyTemplate: "{key}"
+  args: { q: "{keys} mountain biking", count: 20, freshness: "py" }
+  echoKeyAs: searchPhrase
+  project: { url: url, title: title, summary: description, publishedAt: page_age, image: thumbnail.src }
   cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
 
 # The site-scoped four. `{key}` lands after the site: qualifier, so the qualifier is never
 # something the key can escape — a topic phrase cannot widen the search off the site.
 - name: pinkbikeByTopic
-  kind: feed
-  url: 'https://news.google.com/rss/search?q=site:pinkbike.com+{key}&hl=en-AU&gl=AU&ceid=AU:en'
-  keyAs: searchPhrase
-  maxItems: 20
-  minIntervalMs: 1000
+  kind: remote
+  operation: webSearch
+  records: "$.web.results[*]"
+  keyTemplate: "{key}"
+  args: { q: "site:pinkbike.com {keys}", count: 20, freshness: "py" }
+  echoKeyAs: searchPhrase
+  project: { url: url, title: title, summary: description, publishedAt: page_age, image: thumbnail.src }
   cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
 
 - name: vitalMtbByTopic
-  kind: feed
-  url: 'https://news.google.com/rss/search?q=site:vitalmtb.com+{key}&hl=en-AU&gl=AU&ceid=AU:en'
-  keyAs: searchPhrase
-  maxItems: 20
-  minIntervalMs: 1000
+  kind: remote
+  operation: webSearch
+  records: "$.web.results[*]"
+  keyTemplate: "{key}"
+  args: { q: "site:vitalmtb.com {keys}", count: 20, freshness: "py" }
+  echoKeyAs: searchPhrase
+  project: { url: url, title: title, summary: description, publishedAt: page_age, image: thumbnail.src }
   cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
 
 - name: bikeRadarByTopic
-  kind: feed
-  url: 'https://news.google.com/rss/search?q=site:bikeradar.com+{key}&hl=en-AU&gl=AU&ceid=AU:en'
-  keyAs: searchPhrase
-  maxItems: 20
-  minIntervalMs: 1000
+  kind: remote
+  operation: webSearch
+  records: "$.web.results[*]"
+  keyTemplate: "{key}"
+  args: { q: "site:bikeradar.com {keys}", count: 20, freshness: "py" }
+  echoKeyAs: searchPhrase
+  project: { url: url, title: title, summary: description, publishedAt: page_age, image: thumbnail.src }
   cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
 
 - name: redditMtbByTopic
-  kind: feed
-  url: 'https://news.google.com/rss/search?q=site:reddit.com/r/MTB+{key}&hl=en-AU&gl=AU&ceid=AU:en'
-  keyAs: searchPhrase
-  maxItems: 20
-  minIntervalMs: 1000
+  kind: remote
+  operation: webSearch
+  records: "$.web.results[*]"
+  keyTemplate: "{key}"
+  # Brave returns NOTHING for a path in the site: qualifier (`site:reddit.com/r/MTB` → 0 hits,
+  # measured). Naming the subreddit as a plain term alongside a bare-domain site: does work —
+  # 6 of 6 hits on r/MTB in the probe — so it is a strong filter rather than a guaranteed one.
+  args: { q: "site:reddit.com r/MTB {keys}", count: 20, freshness: "py" }
+  echoKeyAs: searchPhrase
+  project: { url: url, title: title, summary: description, publishedAt: page_age, image: thumbnail.src }
   cache: { kind: ttl, seconds: 1800, negativeTtlSeconds: 600 }
 
 # Read direct — Singletracks' own WordPress search feed answers without a bot wall, so there is no

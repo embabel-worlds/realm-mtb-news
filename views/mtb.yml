@@ -84,9 +84,10 @@
     WITH n.url AS url,
          n.title AS title,
          published,
+         n.image AS image,
          CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary,
          collect(DISTINCT source) AS sources
-    RETURN sources, title, url, published, summary
+    RETURN sources, title, url, published, image, summary
     ORDER BY published DESC
     LIMIT $limit
 
@@ -156,7 +157,7 @@
 
 - name: mtb-web
   description: >-
-    Stories on a topic from the open web — anywhere covering the topic, not one of the named sites. Rows: {title, url, published, summary}. Reads this source
+    Stories on a topic from the open web — anywhere covering the topic, not one of the named sites. Rows: {title, url, published, image, summary}. Reads this source
     ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
     across everything, use mtb-news instead.
   params:
@@ -189,13 +190,14 @@
     RETURN n.title AS title,
            n.url    AS url,
            published,
+           n.image  AS image,
            CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
     ORDER BY published DESC
     LIMIT $limit
 
 - name: mtb-pinkbike
   description: >-
-    Stories on a topic from Pinkbike — race coverage, tech, and the industry's noticeboard. Rows: {title, url, published, summary}. Reads this source
+    Stories on a topic from Pinkbike — race coverage, tech, and the industry's noticeboard. Rows: {title, url, published, image, summary}. Reads this source
     ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
     across everything, use mtb-news instead.
   params:
@@ -228,13 +230,14 @@
     RETURN n.title AS title,
            n.url    AS url,
            published,
+           n.image  AS image,
            CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
     ORDER BY published DESC
     LIMIT $limit
 
 - name: mtb-vitalmtb
   description: >-
-    Stories on a topic from Vital MTB — reviews, race reports and rider features. Rows: {title, url, published, summary}. Reads this source
+    Stories on a topic from Vital MTB — reviews, race reports and rider features. Rows: {title, url, published, image, summary}. Reads this source
     ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
     across everything, use mtb-news instead.
   params:
@@ -267,13 +270,14 @@
     RETURN n.title AS title,
            n.url    AS url,
            published,
+           n.image  AS image,
            CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
     ORDER BY published DESC
     LIMIT $limit
 
 - name: mtb-singletracks
   description: >-
-    Stories on a topic from Singletracks — trails, gear reviews and trail-network reporting. Read from its own feed, so its urls are real article links and its summaries are real prose. Rows: {title, url, published, summary}. Reads this source
+    Stories on a topic from Singletracks — trails, gear reviews and trail-network reporting. Read from its own feed, so its urls are real article links and its summaries are real prose. Rows: {title, url, published, image, summary}. Reads this source
     ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
     across everything, use mtb-news instead.
   params:
@@ -306,13 +310,14 @@
     RETURN n.title AS title,
            n.url    AS url,
            published,
+           n.image  AS image,
            CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
     ORDER BY published DESC
     LIMIT $limit
 
 - name: mtb-bikeradar
   description: >-
-    Stories on a topic from BikeRadar — buyer's guides and component testing. Rows: {title, url, published, summary}. Reads this source
+    Stories on a topic from BikeRadar — buyer's guides and component testing. Rows: {title, url, published, image, summary}. Reads this source
     ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
     across everything, use mtb-news instead.
   params:
@@ -345,13 +350,14 @@
     RETURN n.title AS title,
            n.url    AS url,
            published,
+           n.image  AS image,
            CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
     ORDER BY published DESC
     LIMIT $limit
 
 - name: mtb-reddit
   description: >-
-    Stories on a topic from r/MTB — rider opinion rather than reporting. Useful for whether a product is actually good, useless as a source of fact; attribute it as a forum thread, never as news. Rows: {title, url, published, summary}. Reads this source
+    Stories on a topic from r/MTB — rider opinion rather than reporting. Useful for whether a product is actually good, useless as a source of fact; attribute it as a forum thread, never as news. Rows: {title, url, published, image, summary}. Reads this source
     ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
     across everything, use mtb-news instead.
   params:
@@ -384,6 +390,7 @@
     RETURN n.title AS title,
            n.url    AS url,
            published,
+           n.image  AS image,
            CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
     ORDER BY published DESC
     LIMIT $limit

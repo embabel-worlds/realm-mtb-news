@@ -63,6 +63,10 @@
       The feed's own excerpt. Google-carried sources return a link blob here rather than prose —
       treat an unhelpful summary as absent, and never present it to the user as the story's gist.
     searchPhrase: "The topic this item was fetched for, echoed back so it links to the anchor that asked."
+    image: >-
+      Lead image for the story where the source supplies one, else absent. Search-backed sources
+      return a thumbnail; a plain RSS feed usually does not, so treat absence as "this source did
+      not offer one", never as "the story has no picture".
 
 - name: MtbWebStory
   parents: [MtbNewsItem]
