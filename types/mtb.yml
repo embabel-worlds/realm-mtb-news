@@ -1,9 +1,9 @@
 # Two types, and the split between them is the whole design.
 #
-# MtbTopic is STORED — it is the user's standing interest, the handful of things they want
-# followed. MtbNewsItem is VIRTUAL — fetched when a query traverses to it and rolled back after.
-# Mirroring news would mean a sync job, a staleness window, and a store that grows forever to
-# answer a question that is only ever about the last few days. Fetching on traversal costs one
+# MtbTopic is STORED — the user's standing interest, the handful of things they want followed.
+# Everything under MtbNewsItem is VIRTUAL — fetched when a query traverses to it and rolled back
+# after. Mirroring news would mean a sync job, a staleness window, and a store that grows forever
+# to answer a question that is only ever about the last few days. Fetching on traversal costs one
 # feed read and can never serve yesterday's front page as today's.
 #
 # A topic that is not stored still works: the anchor can be pinned with a literal, so an ad-hoc
@@ -26,57 +26,126 @@
         a bare word like 'brakes' pulls in every sport that has them.
     notes: "Why this topic is followed — free text, for the user's own benefit."
 
+# ONE TYPE PER SOURCE, under a shared parent — and this is the load-bearing decision, arrived at
+# by measurement rather than taste.
+#
+# The obvious design is a single MtbNewsItem with six virtual joins hanging off it, one per
+# producer, told apart by relationship. It does not work, and it fails QUIETLY. Probed on a live
+# host: a query traversing two of those relationships fetched the FIRST producer and then matched
+# the nodes it had just materialized for the second, because both traversals land on the same
+# label. The result was Pinkbike's stories reported twice, once labelled Singletracks — plausible
+# rows, wrong provenance, and no warning, which is the worst shape a bug can take here.
+#
+# Distinct LABELS are what the engine plans a separate fetch for. So each source gets its own
+# type carrying `parents: [MtbNewsItem]`: ancestors are physically present on a node however it
+# came to exist, so every story still answers to `:MtbNewsItem` and a view can treat them
+# uniformly, while each label pulls from exactly one feed. Adding a source is a producer plus a
+# type here, and no change to anything that reads the parent label.
+
 - name: MtbNewsItem
   userAnchor: false
   description: >-
-    One story about a followed topic, as a source's own search feed reported it. Virtual: it
-    exists for the life of the query that asked for it and is never stored, so a title here is
-    always what the source is publishing right now.
+    One story about a followed topic, as a source's own search feed reported it. Abstract: nothing
+    is fetched at this label directly — every instance arrives as one of the per-source types
+    below and carries this label as well, so `:MtbNewsItem` is how a query says "a story, from
+    wherever" once the sources have been named.
 
-    The SOURCE IS THE RELATIONSHIP, not a property — `type(r)` distinguishes a Pinkbike hit from
-    an r/MTB thread. Items dedupe on url, so a story carried by two sources is one node reached
-    by two edges, which is a signal in itself.
+    Virtual, so a title here is always what the source is publishing right now. Stories dedupe on
+    url, so one link carried by two sources is one node with two labels — which is a signal in
+    itself, not duplication in the data.
   properties:
     url:
       identity: true
       description: "Canonical link to the story. The dedup key — two sources reporting the same link converge on one node."
     title: "Headline as the source published it."
     publishedAt: "When the source says it was published, ISO-8601 where the feed's date parses."
-    summary: "The feed's own excerpt. Often the first sentences, sometimes empty — an empty summary is a thin feed, not a thin story."
+    summary: >-
+      The feed's own excerpt. Google-carried sources return a link blob here rather than prose —
+      treat an unhelpful summary as absent, and never present it to the user as the story's gist.
     searchPhrase: "The topic this item was fetched for, echoed back so it links to the anchor that asked."
+
+- name: MtbWebStory
+  parents: [MtbNewsItem]
+  userAnchor: false
+  description: "A story from the open web — anywhere covering the topic, not one of the named sites."
+  properties:
+    url: { identity: true, description: "Canonical link — the dedup key." }
   virtualJoins:
-    # One join per source. All anchored on MtbTopic and keyed by the same phrase, so adding a
-    # source is one producer plus one entry here — no change to any view that reads type(r).
     - anchorLabel: MtbTopic
       relationship: HAS_MTB_NEWS
       keyField: topic
       recordKeyField: searchPhrase
       producer: mtbNewsByTopic
       maxAnchors: 10
+
+- name: PinkbikeStory
+  parents: [MtbNewsItem]
+  userAnchor: false
+  description: "A story on Pinkbike — race coverage, tech, and the industry's noticeboard."
+  properties:
+    url: { identity: true, description: "Canonical link — the dedup key." }
+  virtualJoins:
     - anchorLabel: MtbTopic
       relationship: HAS_PINKBIKE_NEWS
       keyField: topic
       recordKeyField: searchPhrase
       producer: pinkbikeByTopic
       maxAnchors: 10
+
+- name: VitalMtbStory
+  parents: [MtbNewsItem]
+  userAnchor: false
+  description: "A story on Vital MTB — reviews, race reports, and rider features."
+  properties:
+    url: { identity: true, description: "Canonical link — the dedup key." }
+  virtualJoins:
     - anchorLabel: MtbTopic
       relationship: HAS_VITALMTB_NEWS
       keyField: topic
       recordKeyField: searchPhrase
       producer: vitalMtbByTopic
       maxAnchors: 10
+
+- name: SingletracksStory
+  parents: [MtbNewsItem]
+  userAnchor: false
+  description: >-
+    A story on Singletracks — trails, gear reviews, and trail-network reporting. The one source
+    read from its own feed rather than through an aggregator, so its urls are real article links
+    and its summaries are real prose.
+  properties:
+    url: { identity: true, description: "Canonical link — the dedup key." }
+  virtualJoins:
     - anchorLabel: MtbTopic
       relationship: HAS_SINGLETRACKS_NEWS
       keyField: topic
       recordKeyField: searchPhrase
       producer: singletracksByTopic
       maxAnchors: 10
+
+- name: BikeRadarStory
+  parents: [MtbNewsItem]
+  userAnchor: false
+  description: "A story on BikeRadar — buyer's guides and component testing, road and mountain both."
+  properties:
+    url: { identity: true, description: "Canonical link — the dedup key." }
+  virtualJoins:
     - anchorLabel: MtbTopic
       relationship: HAS_BIKERADAR_NEWS
       keyField: topic
       recordKeyField: searchPhrase
       producer: bikeRadarByTopic
       maxAnchors: 10
+
+- name: RedditMtbThread
+  parents: [MtbNewsItem]
+  userAnchor: false
+  description: >-
+    A thread from r/MTB. Rider opinion rather than reporting — useful for whether a product is
+    actually good, useless as a source of fact. Attribute it as a forum thread, never as news.
+  properties:
+    url: { identity: true, description: "Canonical link — the dedup key." }
+  virtualJoins:
     - anchorLabel: MtbTopic
       relationship: HAS_REDDIT_MTB
       keyField: topic

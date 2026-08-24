@@ -9,6 +9,13 @@ no data". So: call the host's own endpoints, never re-implement them, and fail o
     python3 scripts/test-views.py [PORT] [--token TOKEN]
 
 PORT defaults to 11043. The token defaults to $EMBABEL_TOKEN.
+
+NOT YET RUN GREEN ON A LIVE HOST. The /api/v1/admin endpoints want the appliance's ADMIN
+credentials — the ones the setup wizard prints — and an MCP session bearer is rejected with a
+401, so this script has never completed a pass here. Every case below was instead verified
+one at a time through the MCP `view_run` tool, which runs the same engine, and every one
+returned rows. Treat the script as unproven plumbing around proven cases: the first person
+with the admin credentials should run it, and fix it rather than trusting it.
 """
 import json
 import os
@@ -23,8 +30,12 @@ CASES = [
     ("mtb-news",           {"topic": "enduro", "limit": 10}),
     ("mtb-news",           {"topic": "mountain biking", "limit": 10}),
     ("mtb-news-by-source", {"topic": "enduro"}),
-    ("mtb-news-from-site", {"topic": "enduro", "site": "pinkbike", "limit": 10}),
-    ("mtb-news-from-site", {"topic": "trail", "site": "singletracks", "limit": 10}),
+    ("mtb-web",            {"topic": "enduro", "limit": 10}),
+    ("mtb-pinkbike",       {"topic": "enduro", "limit": 10}),
+    ("mtb-singletracks",   {"topic": "trail", "limit": 10}),
+    ("mtb-vitalmtb",       {"topic": "downhill", "limit": 10}),
+    ("mtb-bikeradar",      {"topic": "mountain bike", "limit": 10}),
+    ("mtb-reddit",         {"topic": "brakes", "limit": 10}),
     # mtb-tracked-topics reads stored nodes; it is allowed to be empty on a fresh install, so it
     # is checked for a clean run rather than for rows. See ALLOW_EMPTY.
     ("mtb-tracked-topics", {}),

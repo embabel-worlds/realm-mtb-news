@@ -1,19 +1,28 @@
-# The realm's answer surface. Every question this realm exists for should be a view here, so
-# nobody hand-writes Cypher over the join surface — and so the one thing that is easy to get
-# wrong is written once: a virtual label can only be reached by traversing from a bound anchor,
-# so every view below pins MtbTopic. `MATCH (n:MtbNewsItem)` on its own is rejected, and a caller
-# who does not know that gets an error instead of an answer.
+# The realm's answer surface. Every question this realm exists for is a view here, so nobody
+# hand-writes Cypher over the join surface — and so the two things that are easy to get wrong are
+# written once.
 #
-# All of them take the topic as a parameter rather than reading stored MtbTopic nodes, because
-# pinning works whether or not the topic has been saved — the same view answers for a standing
-# interest and for something the user just thought of.
+# FIRST: a virtual label can only be reached by traversing from a BOUND anchor, so every view
+# pins MtbTopic. `MATCH (n:MtbNewsItem)` on its own is rejected, and a caller who does not know
+# that gets an error rather than an answer.
+#
+# SECOND, and this is the one that bites: the fan-out below must name a DISTINCT LABEL per source,
+# not a distinct relationship. Traversing two relationships onto one shared label fetches the
+# first producer and then re-matches the nodes it just materialized for the second — wrong
+# provenance, no warning. Measured on a live host; see the note in types/mtb.yml. Each
+# OPTIONAL MATCH here therefore names its own type, and each accumulator is carried forward
+# explicitly because Cypher will not let an aggregate be added to a grouping key in one step.
+#
+# COST. A combined view reads six feeds, so a cold call is seconds, not milliseconds; the
+# producers' half-hour cache is what makes a follow-up question free. Views that need one source
+# read one source.
 
 - name: mtb-news
   description: >-
     Latest mountain-biking stories on a topic, across every source at once — the open web plus
-    Pinkbike, Vital MTB, Singletracks, BikeRadar and r/MTB. Rows: {source, title, url, published,
-    summary}. `source` is which feed carried it. This is the default view for "what's new in MTB"
-    and for any topic-shaped question; use the per-source views only when the user names a site.
+    Pinkbike, Vital MTB, Singletracks, BikeRadar and r/MTB. Rows: {sources, title, url, published,
+    summary}. `sources` lists every feed carrying that link — two entries means two sources ran it. This is the default view for "what's new in MTB" and for any topic-shaped question;
+    use mtb-news-from-site only when the user names a site.
   params:
     topic:
       type: string
@@ -25,22 +34,68 @@
       description: "Maximum stories to return, newest first."
   cypher: |
     MATCH (t:MtbTopic {topic: $topic})
-          -[r:HAS_MTB_NEWS|HAS_PINKBIKE_NEWS|HAS_VITALMTB_NEWS|HAS_SINGLETRACKS_NEWS|HAS_BIKERADAR_NEWS|HAS_REDDIT_MTB]->
-          (n:MtbNewsItem)
-    RETURN type(r)      AS source,
-           n.title      AS title,
-           n.url        AS url,
-           n.publishedAt AS published,
-           n.summary    AS summary
+    OPTIONAL MATCH (t)-[:HAS_MTB_NEWS]->(w:MtbWebStory)
+    WITH t, collect({source: 'web', n: w}) AS a1
+    OPTIONAL MATCH (t)-[:HAS_PINKBIKE_NEWS]->(p:PinkbikeStory)
+    WITH t, a1, collect({source: 'pinkbike', n: p}) AS a2
+    OPTIONAL MATCH (t)-[:HAS_VITALMTB_NEWS]->(v:VitalMtbStory)
+    WITH t, a1, a2, collect({source: 'vitalmtb', n: v}) AS a3
+    OPTIONAL MATCH (t)-[:HAS_SINGLETRACKS_NEWS]->(s:SingletracksStory)
+    WITH t, a1, a2, a3, collect({source: 'singletracks', n: s}) AS a4
+    OPTIONAL MATCH (t)-[:HAS_BIKERADAR_NEWS]->(b:BikeRadarStory)
+    WITH t, a1, a2, a3, a4, collect({source: 'bikeradar', n: b}) AS a5
+    OPTIONAL MATCH (t)-[:HAS_REDDIT_MTB]->(r:RedditMtbThread)
+    WITH a1, a2, a3, a4, a5, collect({source: 'reddit', n: r}) AS a6
+    UNWIND a1 + a2 + a3 + a4 + a5 + a6 AS row
+    WITH row.source AS source, row.n AS n
+    WHERE n IS NOT NULL
+    // Sources do not agree on a date format and a string sort over the mixture is silently
+    // wrong: Singletracks' own feed returns ISO ('2026-08-19T17:17:52Z') while Google-carried
+    // items return RFC-1123 with a 'GMT' zone the host cannot parse ('Wed, 19 Aug 2026 21:16:09
+    // GMT'), and 'W' sorts above '2', so every Google item would float above every Singletracks
+    // one regardless of date. Normalising to ISO here — once, in the view — is what makes
+    // "newest first" mean it. An unparseable or short value becomes null and sorts last rather
+    // than inventing a date.
+    WITH source, n,
+         CASE
+           WHEN n.publishedAt IS NULL THEN null
+           WHEN left(n.publishedAt, 1) IN ['1', '2'] THEN n.publishedAt
+           WHEN size(n.publishedAt) < 25 THEN null
+           ELSE substring(n.publishedAt, 12, 4) + '-' +
+                CASE substring(n.publishedAt, 8, 3)
+                  WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03'
+                  WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06'
+                  WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09'
+                  WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12'
+                  ELSE null
+                END + '-' +
+                substring(n.publishedAt, 5, 2) + 'T' +
+                substring(n.publishedAt, 17, 8) + 'Z'
+         END AS published
+    // One row per STORY, not per carrying source. Items already dedupe on url, so the same link
+    // reached through two labels is one node — but the fan-out above yields it once per source,
+    // which would spend the caller's limit on repeats of the story everyone ran. Collapsing to a
+    // `sources` list keeps that information (two sources carrying it is a signal about the story)
+    // without paying for it twice.
+    //
+    // The summary guard: Google-carried items put an anchor tag and the publisher's name in the
+    // description rather than prose, and handing that to a model as "the gist" invites it to be
+    // quoted at the user. An unusable excerpt is reported as ABSENT, which is what it is.
+    WITH n.url AS url,
+         n.title AS title,
+         published,
+         CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary,
+         collect(DISTINCT source) AS sources
+    RETURN sources, title, url, published, summary
     ORDER BY published DESC
     LIMIT $limit
 
 - name: mtb-news-by-source
   description: >-
     How many stories each source is carrying on a topic right now, and the most recent date in
-    each. Rows: {source, stories, latest}. Use it to answer "who is covering this" and to see at
-    a glance when one source has gone quiet — a zero row cannot appear here, so a source missing
-    from the result is a source with nothing, which is itself the answer.
+    each. Rows: {source, stories, latest}. Answers "who is covering this". A source absent from
+    the result has nothing on the topic — that is the answer, not a gap, unless a warning says
+    otherwise.
   params:
     topic:
       type: string
@@ -48,59 +103,296 @@
       description: "Search phrase to count coverage for."
   cypher: |
     MATCH (t:MtbTopic {topic: $topic})
-          -[r:HAS_MTB_NEWS|HAS_PINKBIKE_NEWS|HAS_VITALMTB_NEWS|HAS_SINGLETRACKS_NEWS|HAS_BIKERADAR_NEWS|HAS_REDDIT_MTB]->
-          (n:MtbNewsItem)
-    RETURN type(r)            AS source,
-           count(DISTINCT n)  AS stories,
-           max(n.publishedAt) AS latest
+    OPTIONAL MATCH (t)-[:HAS_MTB_NEWS]->(w:MtbWebStory)
+    WITH t, collect({source: 'web', n: w}) AS a1
+    OPTIONAL MATCH (t)-[:HAS_PINKBIKE_NEWS]->(p:PinkbikeStory)
+    WITH t, a1, collect({source: 'pinkbike', n: p}) AS a2
+    OPTIONAL MATCH (t)-[:HAS_VITALMTB_NEWS]->(v:VitalMtbStory)
+    WITH t, a1, a2, collect({source: 'vitalmtb', n: v}) AS a3
+    OPTIONAL MATCH (t)-[:HAS_SINGLETRACKS_NEWS]->(s:SingletracksStory)
+    WITH t, a1, a2, a3, collect({source: 'singletracks', n: s}) AS a4
+    OPTIONAL MATCH (t)-[:HAS_BIKERADAR_NEWS]->(b:BikeRadarStory)
+    WITH t, a1, a2, a3, a4, collect({source: 'bikeradar', n: b}) AS a5
+    OPTIONAL MATCH (t)-[:HAS_REDDIT_MTB]->(r:RedditMtbThread)
+    WITH a1, a2, a3, a4, a5, collect({source: 'reddit', n: r}) AS a6
+    UNWIND a1 + a2 + a3 + a4 + a5 + a6 AS row
+    WITH row.source AS source, row.n AS n
+    WHERE n IS NOT NULL
+    // Sources do not agree on a date format and a string sort over the mixture is silently
+    // wrong: Singletracks' own feed returns ISO ('2026-08-19T17:17:52Z') while Google-carried
+    // items return RFC-1123 with a 'GMT' zone the host cannot parse ('Wed, 19 Aug 2026 21:16:09
+    // GMT'), and 'W' sorts above '2', so every Google item would float above every Singletracks
+    // one regardless of date. Normalising to ISO here — once, in the view — is what makes
+    // "newest first" mean it. An unparseable or short value becomes null and sorts last rather
+    // than inventing a date.
+    WITH source, n,
+         CASE
+           WHEN n.publishedAt IS NULL THEN null
+           WHEN left(n.publishedAt, 1) IN ['1', '2'] THEN n.publishedAt
+           WHEN size(n.publishedAt) < 25 THEN null
+           ELSE substring(n.publishedAt, 12, 4) + '-' +
+                CASE substring(n.publishedAt, 8, 3)
+                  WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03'
+                  WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06'
+                  WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09'
+                  WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12'
+                  ELSE null
+                END + '-' +
+                substring(n.publishedAt, 5, 2) + 'T' +
+                substring(n.publishedAt, 17, 8) + 'Z'
+         END AS published
+    RETURN source,
+           count(DISTINCT n.url) AS stories,
+           max(published)        AS latest
     ORDER BY stories DESC
 
-- name: mtb-news-from-site
+# ONE VIEW PER SOURCE, rather than one view with a `site` parameter — and the parameterised
+# version is the one that looks tidier and is wrong. It was written, run, and measured: a
+# `WHERE $site = 'pinkbike'` hung off an OPTIONAL MATCH filters AFTER the traversal, so asking for
+# one site still fetched all six feeds and spent eight seconds returning the twenty rows one feed
+# would have given in one. Cypher cannot gate a virtual fetch on a runtime parameter; only naming
+# a different label plans a different fetch. So the source is in the view NAME, and a single-site
+# question reads a single feed.
+
+- name: mtb-web
   description: >-
-    Stories on a topic from ONE named source. Rows: {title, url, published, summary}. Ask this
-    when the user names a site — "what does Pinkbike say about", "anything on Singletracks about".
-    `site` takes the short name, not a domain.
+    Stories on a topic from the open web — anywhere covering the topic, not one of the named sites. Rows: {title, url, published, summary}. Reads this source
+    ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
+    across everything, use mtb-news instead.
   params:
     topic:
       type: string
       default: "mountain biking"
-      description: "Search phrase."
-    site:
-      type: string
-      default: "pinkbike"
-      description: "One of: pinkbike, vitalmtb, singletracks, bikeradar, reddit, web."
+      description: "Search phrase, as you would type it into a search box."
     limit:
       type: int
       default: 20
       description: "Maximum stories, newest first."
   cypher: |
-    MATCH (t:MtbTopic {topic: $topic})
-          -[r:HAS_MTB_NEWS|HAS_PINKBIKE_NEWS|HAS_VITALMTB_NEWS|HAS_SINGLETRACKS_NEWS|HAS_BIKERADAR_NEWS|HAS_REDDIT_MTB]->
-          (n:MtbNewsItem)
-    WITH n, type(r) AS rel,
-         CASE toLower($site)
-           WHEN 'pinkbike'    THEN 'HAS_PINKBIKE_NEWS'
-           WHEN 'vitalmtb'    THEN 'HAS_VITALMTB_NEWS'
-           WHEN 'singletracks' THEN 'HAS_SINGLETRACKS_NEWS'
-           WHEN 'bikeradar'   THEN 'HAS_BIKERADAR_NEWS'
-           WHEN 'reddit'      THEN 'HAS_REDDIT_MTB'
-           WHEN 'web'         THEN 'HAS_MTB_NEWS'
-           ELSE null
-         END AS wanted
-    WHERE rel = wanted
-    RETURN n.title       AS title,
-           n.url         AS url,
-           n.publishedAt AS published,
-           n.summary     AS summary
+    MATCH (t:MtbTopic {topic: $topic})-[:HAS_MTB_NEWS]->(n:MtbWebStory)
+    WITH n,
+         CASE
+           WHEN n.publishedAt IS NULL THEN null
+           WHEN left(n.publishedAt, 1) IN ['1', '2'] THEN n.publishedAt
+           WHEN size(n.publishedAt) < 25 THEN null
+           ELSE substring(n.publishedAt, 12, 4) + '-' +
+                CASE substring(n.publishedAt, 8, 3)
+                  WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03'
+                  WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06'
+                  WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09'
+                  WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12'
+                  ELSE null
+                END + '-' +
+                substring(n.publishedAt, 5, 2) + 'T' +
+                substring(n.publishedAt, 17, 8) + 'Z'
+         END AS published
+    RETURN n.title AS title,
+           n.url    AS url,
+           published,
+           CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
+    ORDER BY published DESC
+    LIMIT $limit
+
+- name: mtb-pinkbike
+  description: >-
+    Stories on a topic from Pinkbike — race coverage, tech, and the industry's noticeboard. Rows: {title, url, published, summary}. Reads this source
+    ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
+    across everything, use mtb-news instead.
+  params:
+    topic:
+      type: string
+      default: "mountain biking"
+      description: "Search phrase, as you would type it into a search box."
+    limit:
+      type: int
+      default: 20
+      description: "Maximum stories, newest first."
+  cypher: |
+    MATCH (t:MtbTopic {topic: $topic})-[:HAS_PINKBIKE_NEWS]->(n:PinkbikeStory)
+    WITH n,
+         CASE
+           WHEN n.publishedAt IS NULL THEN null
+           WHEN left(n.publishedAt, 1) IN ['1', '2'] THEN n.publishedAt
+           WHEN size(n.publishedAt) < 25 THEN null
+           ELSE substring(n.publishedAt, 12, 4) + '-' +
+                CASE substring(n.publishedAt, 8, 3)
+                  WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03'
+                  WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06'
+                  WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09'
+                  WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12'
+                  ELSE null
+                END + '-' +
+                substring(n.publishedAt, 5, 2) + 'T' +
+                substring(n.publishedAt, 17, 8) + 'Z'
+         END AS published
+    RETURN n.title AS title,
+           n.url    AS url,
+           published,
+           CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
+    ORDER BY published DESC
+    LIMIT $limit
+
+- name: mtb-vitalmtb
+  description: >-
+    Stories on a topic from Vital MTB — reviews, race reports and rider features. Rows: {title, url, published, summary}. Reads this source
+    ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
+    across everything, use mtb-news instead.
+  params:
+    topic:
+      type: string
+      default: "mountain biking"
+      description: "Search phrase, as you would type it into a search box."
+    limit:
+      type: int
+      default: 20
+      description: "Maximum stories, newest first."
+  cypher: |
+    MATCH (t:MtbTopic {topic: $topic})-[:HAS_VITALMTB_NEWS]->(n:VitalMtbStory)
+    WITH n,
+         CASE
+           WHEN n.publishedAt IS NULL THEN null
+           WHEN left(n.publishedAt, 1) IN ['1', '2'] THEN n.publishedAt
+           WHEN size(n.publishedAt) < 25 THEN null
+           ELSE substring(n.publishedAt, 12, 4) + '-' +
+                CASE substring(n.publishedAt, 8, 3)
+                  WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03'
+                  WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06'
+                  WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09'
+                  WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12'
+                  ELSE null
+                END + '-' +
+                substring(n.publishedAt, 5, 2) + 'T' +
+                substring(n.publishedAt, 17, 8) + 'Z'
+         END AS published
+    RETURN n.title AS title,
+           n.url    AS url,
+           published,
+           CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
+    ORDER BY published DESC
+    LIMIT $limit
+
+- name: mtb-singletracks
+  description: >-
+    Stories on a topic from Singletracks — trails, gear reviews and trail-network reporting. Read from its own feed, so its urls are real article links and its summaries are real prose. Rows: {title, url, published, summary}. Reads this source
+    ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
+    across everything, use mtb-news instead.
+  params:
+    topic:
+      type: string
+      default: "mountain biking"
+      description: "Search phrase, as you would type it into a search box."
+    limit:
+      type: int
+      default: 20
+      description: "Maximum stories, newest first."
+  cypher: |
+    MATCH (t:MtbTopic {topic: $topic})-[:HAS_SINGLETRACKS_NEWS]->(n:SingletracksStory)
+    WITH n,
+         CASE
+           WHEN n.publishedAt IS NULL THEN null
+           WHEN left(n.publishedAt, 1) IN ['1', '2'] THEN n.publishedAt
+           WHEN size(n.publishedAt) < 25 THEN null
+           ELSE substring(n.publishedAt, 12, 4) + '-' +
+                CASE substring(n.publishedAt, 8, 3)
+                  WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03'
+                  WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06'
+                  WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09'
+                  WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12'
+                  ELSE null
+                END + '-' +
+                substring(n.publishedAt, 5, 2) + 'T' +
+                substring(n.publishedAt, 17, 8) + 'Z'
+         END AS published
+    RETURN n.title AS title,
+           n.url    AS url,
+           published,
+           CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
+    ORDER BY published DESC
+    LIMIT $limit
+
+- name: mtb-bikeradar
+  description: >-
+    Stories on a topic from BikeRadar — buyer's guides and component testing. Rows: {title, url, published, summary}. Reads this source
+    ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
+    across everything, use mtb-news instead.
+  params:
+    topic:
+      type: string
+      default: "mountain biking"
+      description: "Search phrase, as you would type it into a search box."
+    limit:
+      type: int
+      default: 20
+      description: "Maximum stories, newest first."
+  cypher: |
+    MATCH (t:MtbTopic {topic: $topic})-[:HAS_BIKERADAR_NEWS]->(n:BikeRadarStory)
+    WITH n,
+         CASE
+           WHEN n.publishedAt IS NULL THEN null
+           WHEN left(n.publishedAt, 1) IN ['1', '2'] THEN n.publishedAt
+           WHEN size(n.publishedAt) < 25 THEN null
+           ELSE substring(n.publishedAt, 12, 4) + '-' +
+                CASE substring(n.publishedAt, 8, 3)
+                  WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03'
+                  WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06'
+                  WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09'
+                  WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12'
+                  ELSE null
+                END + '-' +
+                substring(n.publishedAt, 5, 2) + 'T' +
+                substring(n.publishedAt, 17, 8) + 'Z'
+         END AS published
+    RETURN n.title AS title,
+           n.url    AS url,
+           published,
+           CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
+    ORDER BY published DESC
+    LIMIT $limit
+
+- name: mtb-reddit
+  description: >-
+    Stories on a topic from r/MTB — rider opinion rather than reporting. Useful for whether a product is actually good, useless as a source of fact; attribute it as a forum thread, never as news. Rows: {title, url, published, summary}. Reads this source
+    ALONE — one feed, not six — so prefer it whenever the user names the site. For "what's new"
+    across everything, use mtb-news instead.
+  params:
+    topic:
+      type: string
+      default: "mountain biking"
+      description: "Search phrase, as you would type it into a search box."
+    limit:
+      type: int
+      default: 20
+      description: "Maximum stories, newest first."
+  cypher: |
+    MATCH (t:MtbTopic {topic: $topic})-[:HAS_REDDIT_MTB]->(n:RedditMtbThread)
+    WITH n,
+         CASE
+           WHEN n.publishedAt IS NULL THEN null
+           WHEN left(n.publishedAt, 1) IN ['1', '2'] THEN n.publishedAt
+           WHEN size(n.publishedAt) < 25 THEN null
+           ELSE substring(n.publishedAt, 12, 4) + '-' +
+                CASE substring(n.publishedAt, 8, 3)
+                  WHEN 'Jan' THEN '01' WHEN 'Feb' THEN '02' WHEN 'Mar' THEN '03'
+                  WHEN 'Apr' THEN '04' WHEN 'May' THEN '05' WHEN 'Jun' THEN '06'
+                  WHEN 'Jul' THEN '07' WHEN 'Aug' THEN '08' WHEN 'Sep' THEN '09'
+                  WHEN 'Oct' THEN '10' WHEN 'Nov' THEN '11' WHEN 'Dec' THEN '12'
+                  ELSE null
+                END + '-' +
+                substring(n.publishedAt, 5, 2) + 'T' +
+                substring(n.publishedAt, 17, 8) + 'Z'
+         END AS published
+    RETURN n.title AS title,
+           n.url    AS url,
+           published,
+           CASE WHEN n.summary IS NULL OR left(n.summary, 2) = '<a' THEN null ELSE n.summary END AS summary
     ORDER BY published DESC
     LIMIT $limit
 
 - name: mtb-tracked-topics
   description: >-
-    The topics the user has saved to follow, with how long ago each was added. Rows: {topic,
-    notes}. This reads STORED nodes and fetches nothing — it answers "what am I following",
-    never "what is new". Empty means nothing has been saved yet, which is normal: the news views
-    work on an ad-hoc phrase without anything being tracked first.
+    The topics the user has saved to follow. Rows: {topic, notes}. Reads STORED nodes and fetches
+    nothing — it answers "what am I following", never "what is new". Empty is normal: the news
+    views work on an ad-hoc phrase without anything being tracked first.
   cypher: |
     MATCH (t:MtbTopic)
     RETURN t.topic AS topic, t.notes AS notes

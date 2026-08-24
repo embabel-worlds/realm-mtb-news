@@ -10,10 +10,14 @@ publishing today, and your recollection is months out of date.
 |---|---|---|
 | "what's new in MTB", or anything topic-shaped | `mtb-news` | `topic`, `limit` |
 | "who's covering X" / "is anyone writing about X" | `mtb-news-by-source` | `topic` |
-| the user names a site — "what does Pinkbike say" | `mtb-news-from-site` | `topic`, `site`, `limit` |
+| the user names a site | `mtb-pinkbike`, `mtb-singletracks`, `mtb-vitalmtb`, `mtb-bikeradar`, `mtb-reddit`, `mtb-web` | `topic`, `limit` |
 | "what am I following" | `mtb-tracked-topics` | — |
 
 Run one with `view_run({ name, params })`.
+
+**Reach for a per-source view whenever the user names a site.** `mtb-news` fetches six feeds and
+takes seconds; a per-source view fetches one and takes under a second. The saving is real and the
+answer is the same.
 
 ## Phrasing the topic
 
@@ -26,11 +30,16 @@ need to, because the site already constrains it.
 
 ## Reading the rows
 
-- **`source` is the feed that carried it**, and one story can appear under two sources. That is
-  not duplication in the data — items dedupe on URL — it is two feeds carrying one link, and it
-  is worth saying when it happens.
-- **`published` can be raw text** when a feed's date does not parse. Do not sort a list by hand
-  and present it as chronological if some dates came back unparsed; the view already ordered it.
+- **`sources` lists every feed carrying that link** (in `mtb-news`; the per-source views have no
+  such column, since the source is the view). Two entries is not duplication — items dedupe on
+  URL — it is two feeds running one story, which is worth saying when it happens.
+- **The same story can still appear twice under different urls**, when one source links the
+  article directly and another carries an aggregator link to it. Recognise it by title.
+- **`published` is normalised to ISO by the view**, from two different feed formats. Null means
+  the date was unparseable — say the date is unknown rather than guessing from position.
+- **Coverage depth varies sharply by source.** Pinkbike, Singletracks and the open web are current
+  to within a day; Vital MTB and BikeRadar are indexed thinly and often return archive material
+  years old. Check `published` before calling something new.
 - **`summary` is often empty.** A thin feed is not a thin story — don't summarise absence.
 - **Read `warnings` before the rows.** A `PRODUCER_ERROR` on one source means that source failed,
   not that it has nothing. Say which source was unavailable rather than answering as though the
