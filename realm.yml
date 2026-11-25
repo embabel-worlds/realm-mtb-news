@@ -5,7 +5,7 @@ description: >-
   nothing goes stale. Sources: the open web, plus site-scoped searches over Pinkbike, Vital MTB,
   Singletracks, BikeRadar and r/MTB. Needs no API key. Traversal is
   (t:MtbTopic)-[:HAS_MTB_NEWS|HAS_PINKBIKE_NEWS|...]->(n:MtbNewsItem).
-version: "0.1.0"
+version: "0.1.1"
 author: "jasper"
 category: lifestyle
 tags:
